@@ -1,0 +1,830 @@
+#!/bin/bash
+# LSF submission scripts generator
+
+_bmakejob () {
+        ##
+        # main function
+        #
+
+        # program behavior variables
+        local debug=false
+        local quiet=false
+        local dry_run=false
+        local display_parameters=false
+
+        # constants
+        local -r bmakejob_directory="$(dirname $(readlink -f $0))"
+        local -r default_models_directory="${bmakejob_directory}/models"
+        local -r user_models_directory="${HOME}/.bmakejob"
+        local -r file_name_prefix="job"
+        local -r filename_base_target_pattern="${file_name_prefix}_%s%s.sh"
+        local -r filename_pass_source="${file_name_prefix}_pass.sh"
+        local -r filename_pass_target_pattern="${file_name_prefix}_%s%s_%s.sh"
+        local -r padding_pattern="%%%si"
+        local -r filename_local_config="bmakejobrc.local"
+        local -r filename_user_config=".bmakejobrc"
+        local -r filepath_user_config="${HOME}/${filename_user_config}"
+
+        # hash arrays of values
+        declare -A config # parameters from config files
+        declare -A arguments # parameters from call arguments
+        declare -A parameters # parameters themselves
+        declare -A user_base_models
+        declare -A user_pass_models
+
+        # default job values
+        parameters["job_cpus"]=1
+        parameters["job_threads"]=6
+        parameters["job_name"]="new_case"
+        parameters["job_name_previous"]=""
+        parameters["job_time"]="00:30"
+        parameters["job_command_args"]=""
+        parameters["job_model"]=""
+        parameters["job_passes"]=1
+
+        # default user values
+        parameters["user_id"]=""
+        parameters["user_mail"]=""
+
+        # default file name values
+        parameters["file_name_suffix"]=""
+        parameters["file_name_suffix_auto"]=false
+
+        # other values
+        local padding_amount=1
+
+        # handle command line arguments
+        _read_arguments "$@"
+
+        # search and read config files
+        _read_config
+
+        # apply arguments
+        _get_parameters
+
+        # display parameters and exit
+        if $display_parameters
+        then
+                _print_parameters
+                exit 0
+        fi
+
+        # computed values
+        local job_passes=${parameters["job_passes"]}
+        local job_cpus=${parameters["job_cpus"]}
+        local job_threads=${parameters["job_threads"]}
+
+        # number format
+        # detect padding amount
+        if [[ $parameters["job_passes"] > 1 ]]
+        then
+                padding_amount=${#job_passes}
+        fi
+
+        # set number format
+        local number_format=$(printf $padding_pattern "0${padding_amount}")
+        local job_name_pattern="${parameters["job_name"]}_${number_format}"
+        local job_cores=$(( $job_cpus * $job_threads ))
+        local pass_last=$(( $job_passes - 1 ))
+
+        # list user scripts
+        _get_user_models
+
+        # check parameters consistency
+        _check_parameters
+
+        # select user script from input
+        # generate local files names
+        # create suffix
+        if ${parameters["file_name_suffix_auto"]}
+        then
+                if [[ -n ${parameters["file_name_suffix"]} ]]
+                then
+                        _error "you cannot set -n and -N simultaneously"
+                        _help
+                        exit 12
+                else
+                        # suffix is automatically created from command arguments
+                        file_name_suffix="_$(echo "${parameters["job_command_args"]}" | tr ' ' _)"
+                fi
+        fi
+
+        # set target file names
+        local filename_base_target=$(printf \
+                $filename_base_target_pattern \
+                "${parameters["job_model"]}" \
+                "$file_name_suffix"\
+                )
+
+        # `numpattern` means the pattern now only awaits for a number
+        # I didn't want to have a `filename_pass_target_pattern_pattern`
+        local filename_pass_target_numpattern=$(printf \
+                $filename_pass_target_pattern \
+                "${parameters["job_model"]}" \
+                "$file_name_suffix" \
+                "$number_format"\
+                )
+
+        # here, we gonna generate files and adapt them to the case data
+        # if the dry run flag is activated, no files will be generated
+        if ! $dry_run
+        then
+                _copy_file
+        fi
+
+        # print LSF instructions
+        _print_instructions
+}
+
+_copy_file () {
+        ##
+        # Copy the files to current directory
+        #
+        # There are 2 kinds of file to copypaste:
+        #       - Base file, set by `job_model`, which is copied only once;
+        #       - Pass file, which is copied the amount of passes demanded.
+        #
+        _debug "Copy job files"
+
+        # first, check they exist
+
+        # pass file in model scripts
+        local filepath_pass_source="${user_pass_models[${parameters["job_model"]}]}"
+        if ! [[ -f $filepath_pass_source ]]
+        then
+                _error "Pass file '$filepath_pass_source' not found"
+                exit 20
+        fi
+
+        # base file in user scripts
+        local filepath_base_source="${user_base_models[${parameters["job_model"]}]}"
+
+        # if there is no base model, we consider this is wanted and will skip
+        # everything related to base model/script
+        local base_enabled
+        if [[ -n $filepath_base_source ]]
+        then
+                base_enabled=true
+        else
+                base_enabled=false
+        fi
+
+        if $base_enabled
+        then
+                if ! [[ -f $filepath_base_source ]]
+                then
+                        _error "Base file '$filepath_base_source' not found"
+                        exit 20
+                fi
+        fi
+
+        # copy the files
+
+        # copy the base file
+        if $base_enabled
+        then
+                cp -v $filepath_base_source ./$filename_base_target
+        fi
+
+        # copy all the pass files
+        local i
+        for (( i=0; i<=$pass_last; i++ ))
+        do
+                cp -v $filepath_pass_source \
+                        ./$(printf $filename_pass_target_numpattern $i)
+        done
+
+        # alter files content
+
+        # the model files contain placeholders for actual values, so we remplace
+        # them with sed
+        # here for the base file
+        if $base_enabled
+        then
+                _debug "Altering the base file '$filename_base_target'"
+                sed -i \
+                        -e "s/%%%user_id%%%/${parameters["user_id"]}/g" \
+                        -e "s/%%%user_mail%%%/${parameters["user_mail"]}/g" \
+                        -e "s/%%%job_cpus%%%/${parameters["job_cpus"]}/g" \
+                        -e "s/%%%job_threads%%%/${parameters["job_threads"]}/g" \
+                        -e "s/%%%job_name%%%/${parameters["job_name"]}/g" \
+                        -e "s/%%%job_command_args%%%/${parameters["job_command_args"]}/g" \
+                        -e "s/%%%job_time%%%/${parameters["job_time"]}/g" \
+                        -e "s/%%%job_cores%%%/${job_cores}/g" \
+                        -e "s/%%%job_model%%%/${parameters["job_model"]}/g" \
+                        $filename_base_target
+        fi
+
+        # here for all the pass files
+        local filename_pass_target
+        for (( i=0; i<=$pass_last; i++ ))
+        do
+                filename_pass_target=$(printf $filename_pass_target_numpattern $i)
+
+                _debug "Altering the pass file '$filename_pass_target'"
+                sed -i \
+                        -e "s/%%%user_id%%%/${parameters["user_id"]}/g" \
+                        -e "s/%%%user_mail%%%/${parameters["user_mail"]}/g" \
+                        -e "s/%%%job_cpus%%%/${parameters["job_cpus"]}/g" \
+                        -e "s/%%%job_threads%%%/${parameters["job_threads"]}/g" \
+                        -e "s/%%%job_name%%%/${parameters["job_name"]}/g" \
+                        -e "s/%%%job_command_args%%%/${parameters["job_command_args"]}/g" \
+                        -e "s/%%%job_time%%%/${parameters["job_time"]}/g" \
+                        -e "s/%%%job_cores%%%/${job_cores}/g" \
+                        -e "s/%%%job_name_pass%%%/$(printf $job_name_pattern $i)/g" \
+                        -e "s/%%%job_model%%%/${parameters["job_model"]}/g" \
+                        -e "s/%%%pass%%%/${i}/g" \
+                        -e "s/%%%file_base%%%/${filename_base_target}/g" \
+                        $filename_pass_target
+        done
+}
+
+_print_instructions () {
+        ##
+        # Print LSF instructions
+        #
+        # So the user can happily copy-paste the commands in the terminal
+        #
+        _debug "Print instructions for LSF submission"
+
+        _info "Commands to enter for submiting case to LSF:"
+        echo
+
+        # first command
+        if [[ -z ${parameters["job_name_previous"]} ]]
+        then
+                # if there is no previous job to wait for
+                echo "bsub < $(printf $filename_pass_target_numpattern 0)"
+        else
+                # if there is a job to wait for before running the current one
+                echo "bsub -w \"done(${parameters["job_name_previous"]})\" < $(\
+                        printf $filename_pass_target_numpattern 0)"
+        fi
+
+        # commands which have dependency to the previous job
+        for (( i=1; i<=$pass_last; i++ ))
+        do
+                echo "bsub -w \"done($(\
+                        printf $job_name_pattern $(( $i - 1 ))))\" < $(\
+                        printf $filename_pass_target_numpattern $i)"
+        done
+}
+
+_check_parameters () {
+        ##
+        # Check parameters consistency
+        #
+        _debug "Check parameters consistency"
+
+        # check a user ID has been set
+        if [[ -z ${parameters["user_id"]} ]]
+        then
+                _error "no LSF user ID set"
+                exit 15
+        fi
+
+        # check a job script has been set
+        if [[ -z ${parameters["job_model"]} ]]
+        then
+                _error "no job script demanded"
+                exit 14
+        fi
+
+        # check the input model requested is valid
+        # for base model
+        if ! ([[ ${user_base_models[${parameters["job_model"]}]+0} ]] || \
+                [[ ${user_pass_models[${parameters["job_model"]}]+0} ]])
+
+        then
+                _error "The model '${parameters["job_model"]}' does not exist"
+                exit 13
+        fi
+
+        # for pass model, but don't raise error if it occurs
+        if ! [[ ${user_pass_models[${parameters["job_model"]}]+0} ]]
+        then
+                user_pass_models[${parameters["job_model"]}]=\
+${default_models_directory}/${filename_pass_source}
+
+                _debug "Using default pass model for '${parameters["job_model"]}'"
+        fi
+
+        _debug "Everything looks fine"
+}
+
+_get_user_models () {
+        ##
+        # Retrieve user models
+        #
+        _debug "Search user models"
+
+        # variables
+        local model_name
+        local model_name_lhs
+        local model_name_rhs
+
+        # create user models directory if it does not exist
+        if ! [[ -d $user_models_directory ]]
+        then
+                _debug "Creating user models directory '$user_models_directory'"
+                mkdir $user_models_directory
+        fi
+
+        # read the user directory
+        for file in ${user_models_directory}/*
+        do
+                # check the file is not disabled
+                if [[ "${file##*.}" == "disabled" ]]
+                then
+                        _debug "Skipping disabled model '$file'"
+                        continue
+                fi
+
+                # remove file extension and path
+                model_name="$(basename ${file%.*})"
+
+                # decect pass and base substring
+                model_name_rhs="${model_name##*_}"
+                model_name_lhs="${model_name%_*}"
+
+                # check wether it is a pass model
+                if [[ $model_name_rhs == "pass" ]]
+                then
+                        _debug "Adding '${file}' to pass models list"
+                        user_pass_models[$model_name_lhs]=${file}
+                        continue
+                fi
+
+                # check wether it is a base model
+                if [[ $model_name_rhs == "base" ]]
+                then
+                        _debug "Adding '${file}' to base models list"
+                        user_base_models[$model_name_lhs]=${file}
+                        continue
+                fi
+
+                # by default, it is a base model
+                _debug "Adding '${file}' to base models list"
+                user_base_models[${model_name}]=${file}
+        done
+}
+
+_read_arguments () {
+        ##
+        # Read arguments from command line
+        #
+        # $@
+        #       All the arguments given.
+        #
+
+        # we use getopts to parse the arguments
+        local option
+        while getopts ":hHdDyc:t:P:n:x:Xa:T:p:M:i:m:" option
+        do
+                case $option in
+                        h) # print help message and exit normally
+                                _help
+                                exit 0
+                                ;;
+                        H) # print command line help message and exit normally
+                                _help_command_line
+                                exit 0
+                                ;;
+                        d) # debug mode
+                                debug=true
+                                ;;
+                        D) # dry run flag, no files will be generated
+                                dry_run=true
+                                ;;
+                        y) # print parameters
+                                display_parameters=true
+                                ;;
+                        c) # number of cpu
+                                arguments["job_cpus"]=$OPTARG
+                                ;;
+                        t) # number of threads
+                                arguments["job_threads"]=$OPTARG
+                                ;;
+                        P) # previous job name
+                                arguments["job_name_previous"]=$OPTARG
+                                ;;
+                        n) # job name, converted in snake case
+                                arguments["job_name"]="$(echo "$OPTARG" | tr ' ' _)"
+                                ;;
+                        x) # job script name suffix, converted in snake case
+                                arguments["file_name_suffix"]="_$(echo "$OPTARG" | tr ' ' _)"
+                                ;;
+                        X) # job script name auto suffix, from command name
+                                arguments["file_name_suffix_auto"]=true
+                                ;;
+                        a) # command arguments
+                                arguments["job_command_args"]="$OPTARG"
+                                ;;
+                        T) # time duration of the script
+                                arguments["job_time"]="$OPTARG"
+                                ;;
+                        p) # amount of passes
+                                arguments["job_passes"]=$OPTARG
+                                ;;
+                        M) # job model
+                                arguments["job_model"]=$OPTARG
+                                ;;
+                        i) # user id
+                                arguments["user_id"]=$OPTARG
+                                ;;
+                        m) # user mail address
+                                arguments["user_mail"]=$OPTARG
+                                ;;
+                        :) # invalid use of parameter
+                                _error "Invalid use of parameter -${OPTARG}"
+                                _help_command_line
+                                exit 10
+                                ;;
+                        \?) # invalid parameter
+                                _error "Invalid parameter"
+                                _help_command_line
+                                exit 11
+                                ;;
+                esac
+        done
+}
+
+_read_config () {
+        ##
+        # Search config files to read
+        #
+        # It searches in the current and parents directories and in the user
+        # global config file, in the following order:
+        #       - User config file;
+        #       - Nth parent directory local file (filesystem root);
+        #       - N - 1th parent directory local file;
+        #       - ...
+        #       - First parent directory local file;
+        #       - Current directory local file.
+        #
+        _debug "Search config files"
+
+        # variables
+        local filepath_local_config
+        local directory="${PWD}"
+        local directory_old=""
+        declare -a directory_list
+
+        # load user config
+        if [[ -f $filepath_user_config ]]
+        then
+                _read_config_file $filepath_user_config
+        fi
+
+        # detect parent directories
+        # we have to do this in reverse order
+        while true
+        do
+                _debug "Adding '${directory}' to config file search list"
+                directory_list+=("${directory}")
+                directory_old="${directory}"
+                directory=$(dirname "${directory}")
+                if [[ $directory == $directory_old ]]
+                then
+                        break
+                fi
+        done
+
+        # load local config files in reverse order
+        # so as to start with the farest directory and to end with the current
+        # directory
+        local i
+        for (( i=${#directory_list[@]}; i>=0; i-- ))
+        do
+                filepath_local_config="${directory_list[$i]}/${filename_local_config}"
+
+                # skip if we find the user config file, it has been allready
+                # read
+                if [[ $filepath_local_config == $filepath_user_config ]]
+                then
+                        continue
+                fi
+
+                if [[ -f $filepath_local_config ]]
+                then
+                        _read_config_file $filepath_local_config
+                fi
+        done
+}
+
+_get_parameters () {
+        ##
+        # Mix arguments and config into parameters
+        #
+        _debug "Creating parameters list"
+
+        # add config values
+        local config_item_name
+        for config_item_name in "${!config[@]}"
+        do
+                _debug "Adding config item to parameters '$config_item_name': \
+${config[$config_item_name]}"
+
+                parameters[${config_item_name}]=${config[${config_item_name}]}
+        done
+
+        # add arguments values
+        local argument_name
+        for argument_name in "${!arguments[@]}"
+        do
+                _debug "Adding argument to parameters '$argument_name': \
+${arguments[$argument_name]}"
+                parameters[${argument_name}]=${arguments[${argument_name}]}
+        done
+}
+
+_read_config_file () {
+        ##
+        # Read config file
+        #
+        # The file must exist.
+        #
+        # $1
+        #       config file path
+        #
+        _debug "Reading config file '$1'"
+
+        # variables
+        local -r filepath="$1"
+        local key
+        local value
+
+        # load user config
+        if ! [[ -f $filepath ]]
+        then
+                _error "Unable to find config file '${filepath}'"
+                exit 2
+        fi
+        # expects key = value format
+        while IFS=" = " read key value
+        do
+                # skip line if the `key = value` pattern has been found and the
+                # first character is not a `#` or a `;` (which are the comment
+                # characters)
+                if ! [[ $value ]] \
+                        || [[ ${key::1} == '#' ]] \
+                        || [[ ${key::1} == ';' ]]
+
+                then
+                        continue
+                fi
+                # remove anything after a `#` or a `;` character
+                value=$(echo $value | cut -f1 -d '#' | cut -f1 -d ';')
+                case $key in
+                        id) # user ID
+                                config["user_id"]="$value"
+                                ;;
+                        mail) # user email adress
+                                config["user_mail"]="$value"
+                                ;;
+                        cpus) # number of CPUs
+                                config["job_cpus"]=$value
+                                ;;
+                        threads) # number of threads
+                                config["job_threads"]=$value
+                                ;;
+                        duration) # time duration of the script
+                                config["job_time"]="$value"
+                                ;;
+                        passes) # amount of passes
+                                config["job_passes"]=$value
+                                ;;
+                        model) # kind of job
+                                config["job_model"]=$value
+                                ;;
+                        *) # error case
+                                _error "Invalid key '${key}' in config file"
+                                _help_config_file
+                                exit 13
+                esac
+        done <$filepath
+}
+
+_print_parameters () {
+        ##
+        # Print all parameters on screen
+        #
+        _info "Parameters gathered from config files and command arguments:"
+
+        local parameter_name
+        local parameter_pattern="%-30s %-40s\n"
+        for parameter_name in "${!parameters[@]}"
+        do
+                printf "$parameter_pattern" "${parameter_name}" "${parameters[$parameter_name]}"
+        done
+}
+
+_help () {
+        # display help message
+        _help_command_line
+        echo
+        _help_config_file
+        echo
+        _help_models
+}
+
+_help_command_line () {
+        ##
+        # Display command line help message
+        #
+
+        local -r base_suffix=$(printf $filename_base_target_pattern "script" "")
+        local -r pass_suffix=$(printf $filename_pass_target_pattern "script" "" "#")
+        cat << EOF
+bmakebvcm [-c CPUS] [-t THREADS] [-p PASSES] [-P PREVIOUS]
+          [-n NAME] [-x FILE_NAME_SUFFIX | -X] [-T "DURATION"]
+          [-M model] [-b "ARGS"] [-i ID] [-m MAIL_ADDRESS]
+          [-D] [-d] [-y] [-H] [-h]
+
+Generate LSF job submission files.
+
+Arguments:
+    -c CPUS
+        Number of CPUs, default value is ${parameters["job_cpus"]}.
+    -t THREADS
+        Number of threads per CPU, default value is ${parameters["job_threads"]}.
+    -p PASSES
+        Amount of passes of the job; it will generate multiple pass files and
+        display the LSF commands to chain them, default value is
+        ${parameters["job_passes"]}.
+    -P PREVIOUS
+        Name of a previous job which has to end before the current job starts.
+    -n NAME
+        Name of the job (will be converted to snake case), can be the name of
+        the case, default job name is "${parameters["job_name"]}".
+    -x FILE_NAME_SUFFIX
+        Suffix of the generated LSF files (will be converted to snake case), the
+        files generated are "${parameters["base_suffix"]}" for the base file and
+        "${parameters["pass_suffix"]}" for the pass files. You can add a suffix
+        to them. You cannot set '-X' with it.
+    -X
+        Use the command arguments as suffix for the generated LSF files. You cannot
+        set '-x' with it.
+    -T "DURATION"
+        Time of execution of the job (in HH:MM format), default value is
+        ${parameters["job_time"]}.
+    -M MODEL
+        Model from which generate the job script. Models are located in
+        "${user_models_directory}". Any model file in this directory can be
+        pointed by this option (without file extension).
+    -a "ARGS"
+        Arguments passed to the command, default arguments are
+        "${parameters["job_command_args"]}".
+    -i ID
+        LSF user ID for job submission.
+    -m MAIL_ADDRESS
+        User mail address, for sending emails at computation start/end.
+    -D
+        Dry run. Don't copy any file, only display LSF commands.
+    -d
+        Debug mode, increases verbosity.
+    -y
+        Display the parameters gathered from config files and arguments, then
+        exit.
+    -H
+        Display only the command line help message and exit.
+    -h
+        Display the complete help message and exit.
+EOF
+}
+
+_help_config_file () {
+        ##
+        # Display config file help message
+        #
+
+        cat << EOF
+Some arguments of the program can be stored permanently in the home config file
+"${filepath_user_config}" or in any local config file "${filename_local_config}"
+found in the parents directories of the current directory. Config files have a
+"KEY = VALUE" format. These parameters are considered as default values and are
+overriden by command line arguments. In a config line, anything after a "#" or a
+";" character is considered as a comment.
+
+Parameters:
+    id = ID
+        LSF user ID for job submission.
+    mail = MAIL_ADDRESS
+        User mail address, for sending emails at computation start/end.
+    cpus = CPUS
+        Number of CPUs, default value is ${parameters["job_cpus"]}.
+    threads = THREADS
+        Number of threads per CPU, default value is ${parameters["job_threads"]}.
+    passes = PASSES
+        Amount of passes of the job; it will generate multiple pass files and
+        display the LSF commands to chain them, default value is
+        ${parameters["job_passes"]}.
+    duration = DURATION
+        Time of execution of the job (in HH:MM format), default value is
+        ${parameters["job_time"]}.
+    model = MODEL
+        Kind of job script to run. Those scripts are located in
+        "${user_models_directory}". Any script in this directory can be pointed by this
+        option. The extension is optionnal.
+EOF
+}
+
+_help_models () {
+        ##
+        # Display model files help message
+        #
+
+        cat << EOF
+The job script files are of two sorts:
+    * Base scripts, that is the sort of scripts that is unique and pass
+      agnostic. It is designed for parts of job actions that never change. The
+      base script is not directly called by LSF;
+    * Pass scripts, that is the sort of scripts that is multiple and aware of
+      the current pass. It is designed for parts of job actions that change with
+      the pass. There are as much pass files as requested passes. One pass
+      script is called by LSF for one pass and may call the base file.
+
+Models for base scripts and pass scripts are stored in the user directory
+'${user_models_directory}'. When specifying '-M' in command arguments or
+'model' in config file, you set which model you want to use to obtain the
+job scripts. You can create base models and pass models:
+    * Base models name is suffixed by '_base'. If there is no suffix, the file
+      is assumed to be a base model.
+    * Pass models name is suffixed by '_pass'.
+
+Please take note models file extension is not taken in account: '-M' and 'model'
+represent a model without file extension. If no pass model is present for a
+given '-M' or 'model' parameter, a minimal default one will be used instead.
+
+Scripts files are obtained by replacing placeholders in models by parameters
+gathered from config files and command arguments. These placeholders are of
+format '%%%parameter%%%'. Base models and pass models don't have access to the
+same parameters: base models don't have access to pass specific values.
+    * Base models available parameters:
+        * LSF user ID '%%%user_id%%%';
+        * User mail address '%%%user_mail%%%';
+        * Number of CPUs '%%%job_cpus%%%';
+        * Number of threads per CPU '%%%job_threads%%%';
+        * Number of cores (number of CPUs × number of threads) '%%%job_cores%%%';
+        * Name of the job '%%%job_name%%%';
+        * Time of execution of the job '%%%job_time%%%';
+        * Arguments passed to command '%%%job_command_args%%%';
+        * Model '%%%job_model%%%';
+    * Pass models available parameters:
+        * LSF user ID '%%%user_id%%%';
+        * User mail address '%%%user_mail%%%';
+        * Number of CPUs '%%%job_cpus%%%';
+        * Number of threads per CPU '%%%job_threads%%%';
+        * Number of cores (number of CPUs × number of threads) '%%%job_cores%%%';
+        * Name of the job '%%%job_name%%%';
+        * Time of execution of the job '%%%job_time%%%';
+        * Arguments passed to command '%%%job_command_args%%%';
+        * Model '%%%job_model%%%';
+        * Name of the job for the current pass (job name appended by pass value)
+          '%%%job_name_pass%%%';
+        * Current pass '%%%pass%%%';
+        * Name of the base script '%%%file_base%%%'.
+EOF
+}
+
+_error () {
+        ##
+        # Print error
+        #
+        >&2 printf "$(tput sgr 0; tput bold)[$(tput setaf 1)ERROR$(tput setaf 9)] %s$(tput sgr 0)\n" "$@"
+}
+
+_warning () {
+        ##
+        # Print warning
+        #
+        >&2 printf "$(tput sgr 0)[$(tput setaf 3;tput bold)WARNING$(tput sgr 0)] %s\n" "$@"
+}
+
+_info () {
+        ##
+        # Print normal output
+        #
+        if ! $quiet
+        then
+                if $debug
+                then
+                        >&1 printf "$(tput sgr 0)[$(tput setaf 4)INFO$(tput setaf 9)] %s\n" "$@"
+                else
+                        >&1 printf "%s\n" "$@"
+                fi
+        fi
+}
+
+_debug () {
+        ##
+        # Print debug
+        #
+        if $debug
+        then
+                >&2 printf "$(tput sgr 0)[$(tput setaf 6)DEBUG$(tput setaf 9)] %s\n" "$@"
+        fi
+}
+
+# call of the actual function with the same arguments as the script
+_bmakejob "$@"

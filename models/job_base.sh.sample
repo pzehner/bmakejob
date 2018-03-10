@@ -1,0 +1,97 @@
+#!/bin/bash
+# Need to be sourced from a LSF script
+
+
+##
+# Block filled by `bmakejob` with user input values
+#
+
+
+JOB_CPUS=%%%job_cpus%%%
+JOB_THREADS=%%%job_threads%%%
+JOB_NAME="%%%job_name%%%"
+JOB_COMMAND_ARGS="%%%job_command_args%%%"
+
+
+##
+# Some handy functions
+#
+
+
+printline () {
+        local linemessage="$*"
+        local linestring="---[ ${linemessage} ]"
+        local linestringsize=${#linestring}
+        printf '%s' "${linestring}"
+        printf '%*s\n' "$((${COLUMNS:-72} - ${linestringsize}))" '' | tr ' ' -
+}
+
+startline () {
+        if [[ -z $* ]]
+        then
+                printline "Starting"
+        else
+                printline "Starting $*"
+        fi
+}
+
+endline () {
+        if [[ -z $* ]]
+        then
+                printline "Done"
+        else
+                printline "Done $*"
+        fi
+}
+
+
+##
+# Timestamping at start
+#
+
+
+startline "${JOB_NAME} MPI job"
+printline $(date -Iseconds)
+starttime=$(date -u +%s)
+
+
+##
+# Environment
+#
+
+
+startline "environment loading"
+
+# sourcing the module functions, in order to do `module load ...`
+source /usr/share/Modules/init/bash
+
+# source the different environments needed by the computation here
+
+endline "environment loading"
+
+
+##
+# Computation
+#
+
+
+startline "computation"
+
+# set the command you want to run through mpt
+JOB_COMMAND=""
+
+# perform computation
+export OMP_NUM_THREADS=$JOB_THREADS
+mptrun -np $JOB_CPUS -omp $JOB_THREADS $JOB_COMMAND $JOB_COMMAND_ARGS
+
+endline "computation"
+
+
+##
+# Timestamping at end
+#
+
+
+printline $(date -Iseconds)
+stoptime=$(date -u +%s)
+printline "Elapsed: $(date -u -d @$(($stoptime - $starttime)) +%T)"
