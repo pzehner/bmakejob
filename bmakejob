@@ -1,11 +1,10 @@
 #!/bin/bash
 # LSF submission scripts generator
 
+##
+# main function
+#
 _bmakejob () {
-        ##
-        # main function
-        #
-
         # program behavior variables
         local debug=false
         local quiet=false
@@ -136,14 +135,14 @@ _bmakejob () {
         _print_instructions
 }
 
+##
+# Copy the files to current directory
+#
+# There are 2 kinds of file to copypaste:
+#       - Base file, set by `job_model`, which is copied only once;
+#       - Pass file, which is copied the amount of passes demanded.
+#
 _copy_file () {
-        ##
-        # Copy the files to current directory
-        #
-        # There are 2 kinds of file to copypaste:
-        #       - Base file, set by `job_model`, which is copied only once;
-        #       - Pass file, which is copied the amount of passes demanded.
-        #
         _debug "Copy job files"
 
         # first, check they exist
@@ -239,12 +238,12 @@ _copy_file () {
         done
 }
 
+##
+# Print LSF instructions
+#
+# So the user can happily copy-paste the commands in the terminal
+#
 _print_instructions () {
-        ##
-        # Print LSF instructions
-        #
-        # So the user can happily copy-paste the commands in the terminal
-        #
         _debug "Print instructions for LSF submission"
 
         _info "Commands to enter for submiting case to LSF:"
@@ -270,10 +269,10 @@ _print_instructions () {
         done
 }
 
+##
+# Check parameters consistency
+#
 _check_parameters () {
-        ##
-        # Check parameters consistency
-        #
         _debug "Check parameters consistency"
 
         # check a user ID has been set
@@ -312,10 +311,10 @@ ${default_models_directory}/${filename_pass_source}
         _debug "Everything looks fine"
 }
 
+##
+# Retrieve user models
+#
 _get_user_models () {
-        ##
-        # Retrieve user models
-        #
         _debug "Search user models"
 
         # variables
@@ -369,14 +368,13 @@ _get_user_models () {
         done
 }
 
+##
+# Read arguments from command line
+#
+# $@
+#       All the arguments given.
+#
 _read_arguments () {
-        ##
-        # Read arguments from command line
-        #
-        # $@
-        #       All the arguments given.
-        #
-
         # we use getopts to parse the arguments
         local option
         while getopts ":hHdDyc:t:P:n:x:Xa:T:p:M:i:m:" option
@@ -449,19 +447,19 @@ _read_arguments () {
         done
 }
 
+##
+# Search config files to read
+#
+# It searches in the current and parents directories and in the user
+# global config file, in the following order:
+#       - User config file;
+#       - Nth parent directory local file (filesystem root);
+#       - N - 1th parent directory local file;
+#       - ...
+#       - First parent directory local file;
+#       - Current directory local file.
+#
 _read_config () {
-        ##
-        # Search config files to read
-        #
-        # It searches in the current and parents directories and in the user
-        # global config file, in the following order:
-        #       - User config file;
-        #       - Nth parent directory local file (filesystem root);
-        #       - N - 1th parent directory local file;
-        #       - ...
-        #       - First parent directory local file;
-        #       - Current directory local file.
-        #
         _debug "Search config files"
 
         # variables
@@ -512,10 +510,10 @@ _read_config () {
         done
 }
 
+##
+# Mix arguments and config into parameters
+#
 _get_parameters () {
-        ##
-        # Mix arguments and config into parameters
-        #
         _debug "Creating parameters list"
 
         # add config values
@@ -538,15 +536,15 @@ ${arguments[$argument_name]}"
         done
 }
 
+##
+# Read config file
+#
+# The file must exist.
+#
+# $1
+#       config file path
+#
 _read_config_file () {
-        ##
-        # Read config file
-        #
-        # The file must exist.
-        #
-        # $1
-        #       config file path
-        #
         _debug "Reading config file '$1'"
 
         # variables
@@ -605,10 +603,10 @@ _read_config_file () {
         done <$filepath
 }
 
+##
+# Print all parameters on screen
+#
 _print_parameters () {
-        ##
-        # Print all parameters on screen
-        #
         _info "Parameters gathered from config files and command arguments:"
 
         local parameter_name
@@ -619,8 +617,10 @@ _print_parameters () {
         done
 }
 
+##
+# Display help message
+#
 _help () {
-        # display help message
         _help_command_line
         echo
         _help_config_file
@@ -628,18 +628,17 @@ _help () {
         _help_models
 }
 
+##
+# Display command line help message
+#
 _help_command_line () {
-        ##
-        # Display command line help message
-        #
-
         local -r base_suffix=$(printf $filename_base_target_pattern "script" "")
         local -r pass_suffix=$(printf $filename_pass_target_pattern "script" "" "#")
         cat << EOF
-bmakebvcm [-c CPUS] [-t THREADS] [-p PASSES] [-P PREVIOUS]
-          [-n NAME] [-x FILE_NAME_SUFFIX | -X] [-T "DURATION"]
-          [-M model] [-b "ARGS"] [-i ID] [-m MAIL_ADDRESS]
-          [-D] [-d] [-y] [-H] [-h]
+bmakejob [-c CPUS] [-t THREADS] [-p PASSES] [-P PREVIOUS]
+         [-n NAME] [-x FILE_NAME_SUFFIX | -X] [-T "DURATION"]
+         [-M model] [-b "ARGS"] [-i ID] [-m MAIL_ADDRESS]
+         [-D] [-d] [-y] [-H] [-h]
 
 Generate LSF job submission files.
 
@@ -693,11 +692,10 @@ Arguments:
 EOF
 }
 
+##
+# Display config file help message
+#
 _help_config_file () {
-        ##
-        # Display config file help message
-        #
-
         cat << EOF
 Some arguments of the program can be stored permanently in the home config file
 "${filepath_user_config}" or in any local config file "${filename_local_config}"
@@ -729,11 +727,10 @@ Parameters:
 EOF
 }
 
+##
+# Display model files help message
+#
 _help_models () {
-        ##
-        # Display model files help message
-        #
-
         cat << EOF
 The job script files are of two sorts:
     * Base scripts, that is the sort of scripts that is unique and pass
@@ -787,24 +784,24 @@ same parameters: base models don't have access to pass specific values.
 EOF
 }
 
+##
+# Print error
+#
 _error () {
-        ##
-        # Print error
-        #
         >&2 printf "$(tput sgr 0; tput bold)[$(tput setaf 1)ERROR$(tput setaf 9)] %s$(tput sgr 0)\n" "$@"
 }
 
+##
+# Print warning
+#
 _warning () {
-        ##
-        # Print warning
-        #
         >&2 printf "$(tput sgr 0)[$(tput setaf 3;tput bold)WARNING$(tput sgr 0)] %s\n" "$@"
 }
 
+##
+# Print normal output
+#
 _info () {
-        ##
-        # Print normal output
-        #
         if ! $quiet
         then
                 if $debug
@@ -816,10 +813,10 @@ _info () {
         fi
 }
 
+##
+# Print debug
+#
 _debug () {
-        ##
-        # Print debug
-        #
         if $debug
         then
                 >&2 printf "$(tput sgr 0)[$(tput setaf 6)DEBUG$(tput setaf 9)] %s\n" "$@"
