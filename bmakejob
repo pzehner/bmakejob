@@ -380,11 +380,11 @@ _read_arguments () {
         while getopts ":hHdDyc:t:P:n:x:Xa:T:p:M:i:m:" option
         do
                 case $option in
-                        h) # print help message and exit normally
+                        H) # print help message and exit normally
                                 _help
                                 exit 0
                                 ;;
-                        H) # print command line help message and exit normally
+                        h) # print command line help message and exit normally
                                 _help_command_line
                                 exit 0
                                 ;;
@@ -686,9 +686,9 @@ Arguments:
         Display the parameters gathered from config files and arguments, then
         exit.
     -H
-        Display only the command line help message and exit.
-    -h
         Display the complete help message and exit.
+    -h
+        Display only the command line help message and exit.
 EOF
 }
 
@@ -788,7 +788,7 @@ EOF
 # Print error
 #
 _error () {
-        >&2 printf "$(tput sgr 0; tput bold)[$(tput setaf 1)ERROR$(tput setaf 9)] %s$(tput sgr 0)\n" "$@"
+        >&2 printf "$(tput sgr 0; tput bold)[$(tput setaf 1)ERROR$(tput setaf 7)] %s$(tput sgr 0)\n" "$@"
 }
 
 ##
@@ -806,7 +806,7 @@ _info () {
         then
                 if $debug
                 then
-                        >&1 printf "$(tput sgr 0)[$(tput setaf 4)INFO$(tput setaf 9)] %s\n" "$@"
+                        >&1 printf "$(tput sgr 0)[$(tput setaf 4)INFO$(tput sgr 0)] %s\n" "$@"
                 else
                         >&1 printf "%s\n" "$@"
                 fi
@@ -819,7 +819,7 @@ _info () {
 _debug () {
         if $debug
         then
-                >&2 printf "$(tput sgr 0)[$(tput setaf 6)DEBUG$(tput setaf 9)] %s\n" "$@"
+                >&2 printf "$(tput sgr 0)[$(tput setaf 6)DEBUG$(tput sgr 0)] %s\n" "$@"
         fi
 }
 
